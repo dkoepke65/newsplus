@@ -18,19 +18,21 @@ app.use(express.static(distPath));
 
 // Cache for Reddit posts (to avoid rate limiting)
 let cache = {
-  worldnews: { data: null, timestamp: 0 },
-  news: { data: null, timestamp: 0 }
+  worldnews: { data: null, timestamp: 0, stale: false },
+  news: { data: null, timestamp: 0, stale: false }
 };
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const STALE_CACHE_DURATION = 60 * 60 * 1000; // 1 hour (use stale data if Reddit is down)
 
 // Fetch posts from a subreddit
 async function fetchSubreddit(subreddit) {
   const now = Date.now();
+  const cached = cache[subreddit];
   
   // Return cached data if fresh
-  if (cache[subreddit].data && (now - cache[subreddit].timestamp) < CACHE_DURATION) {
-    console.log(`Returning cached data for r/${subreddit}`);
-    return cache[subreddit].data;
+  if (cached.data && (now - cached.timestamp) < CACHE_DURATION) {
+    console.log(`✓ Fresh cached data for r/${subreddit} (${Math.round((now - cached.timestamp)/1000)}s old)`);
+    return { posts: cached.data, stale: false };
   }
   
   try {
@@ -42,6 +44,11 @@ async function fetchSubreddit(subreddit) {
     });
     
     if (!response.ok) {
+      // Check if it's a rate limit / block
+      if (response.status === 429 || response.status === 403) {
+        console.warn(`⚠️ Reddit is blocking/rate-limiting requests (HTTP ${response.status})`);
+        throw new Error('BLOCKED');
+      }
       throw new Error(`Reddit API error: ${response.status}`);
     }
     
@@ -79,30 +86,51 @@ async function fetchSubreddit(subreddit) {
       });
     
     // Cache the results
-    cache[subreddit] = { data: posts, timestamp: now };
+    cache[subreddit] = { data: posts, timestamp: now, stale: false };
+    console.log(`✓ Fetched fresh data for r/${subreddit} (${posts.length} posts)`);
     
-    return posts;
+    return { posts, stale: false };
   } catch (error) {
-    console.error(`Error fetching r/${subreddit}:`, error);
-    // Return cached data even if stale, or empty array
-    return cache[subreddit].data || [];
+    const age = cached.data ? Math.round((now - cached.timestamp) / 60000) : null;
+    
+    if (error.message === 'BLOCKED') {
+      console.error(`🚫 Reddit blocking requests for r/${subreddit} - using ${age ? age + 'min old' : 'no'} cache`);
+    } else {
+      console.error(`❌ Error fetching r/${subreddit}:`, error.message);
+    }
+    
+    // Return cached data even if stale (up to 1 hour), or empty array
+    if (cached.data && (now - cached.timestamp) < STALE_CACHE_DURATION) {
+      console.log(`⚠️ Returning STALE cached data for r/${subreddit} (${age} min old)`);
+      return { posts: cached.data, stale: true, staleAge: age };
+    }
+    
+    console.error(`✗ No usable cache for r/${subreddit}, returning empty`);
+    return { posts: [], stale: false };
   }
 }
 
 // API Routes
 app.get('/api/news', async (req, res) => {
   try {
-    const [worldnews, news] = await Promise.all([
+    const [worldnewsResult, newsResult] = await Promise.all([
       fetchSubreddit('worldnews'),
       fetchSubreddit('news')
     ]);
     
     // Combine and sort by score
-    const allPosts = [...worldnews, ...news].sort((a, b) => b.score - a.score);
+    const allPosts = [...worldnewsResult.posts, ...newsResult.posts].sort((a, b) => b.score - a.score);
+    
+    // Determine if any data is stale
+    const isStale = worldnewsResult.stale || newsResult.stale;
+    const staleAge = Math.max(worldnewsResult.staleAge || 0, newsResult.staleAge || 0);
     
     res.json({
       posts: allPosts,
-      lastUpdated: new Date().toISOString()
+      lastUpdated: new Date().toISOString(),
+      stale: isStale,
+      staleAge: isStale ? staleAge : null,
+      warning: isStale ? `Showing ${staleAge} minute old data (Reddit temporarily unavailable)` : null
     });
   } catch (error) {
     console.error('Error fetching news:', error);
@@ -113,11 +141,14 @@ app.get('/api/news', async (req, res) => {
 app.get('/api/news/:subreddit', async (req, res) => {
   try {
     const { subreddit } = req.params;
-    const posts = await fetchSubreddit(subreddit);
+    const result = await fetchSubreddit(subreddit);
     
     res.json({
-      posts,
-      lastUpdated: new Date().toISOString()
+      posts: result.posts,
+      lastUpdated: new Date().toISOString(),
+      stale: result.stale,
+      staleAge: result.staleAge || null,
+      warning: result.stale ? `Showing ${result.staleAge} minute old data (Reddit temporarily unavailable)` : null
     });
   } catch (error) {
     console.error(`Error fetching r/${req.params.subreddit}:`, error);

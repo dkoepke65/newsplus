@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 interface NewsPost {
@@ -20,11 +20,11 @@ function App() {
   const [posts, setPosts] = useState<NewsPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<NewsPost | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string>('');
-  const [summary, setSummary] = useState<any>(null);
-  const [articleLoading, setArticleLoading] = useState(false);
-  const [showFullText, setShowFullText] = useState(false);
+  const [iframeError, setIframeError] = useState(false);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const API_URL = ''; // Use relative URLs - works both locally and deployed
 
@@ -43,12 +43,16 @@ function App() {
   const fetchNews = async () => {
     setLoading(true);
     setError(null);
+    setWarning(null);
     try {
       const response = await fetch(`${API_URL}/api/news`);
       if (!response.ok) throw new Error('Failed to fetch news');
       const data = await response.json();
       setPosts(data.posts);
       setLastUpdated(new Date(data.lastUpdated).toLocaleString());
+      if (data.warning) {
+        setWarning(data.warning);
+      }
     } catch (err) {
       setError('Failed to load news. Please try again.');
       console.error('Error fetching news:', err);
@@ -69,34 +73,35 @@ function App() {
     return 'just now';
   };
 
-  const openArticle = async (post: NewsPost) => {
+  const openArticle = (post: NewsPost) => {
     setSelectedPost(post);
-    setSummary(null);
-    setArticleLoading(true);
-    setShowFullText(false);
-    
-    // Fetch AI summary from backend
-    try {
-      const response = await fetch(`${API_URL}/api/summarize?url=${encodeURIComponent(post.url)}`);
-      if (response.ok) {
-        const data = await response.json();
-        setSummary(data);
-      } else {
-        setSummary(null);
+    setIframeError(false);
+    // Check if iframe failed to load after 3 seconds
+    setTimeout(() => {
+      if (iframeRef.current) {
+        try {
+          // If we can access contentDocument, it loaded
+          const doc = iframeRef.current.contentDocument;
+          if (!doc || doc.body.innerHTML === '') {
+            // Auto-open original article
+            window.open(post.url, '_blank', 'noopener,noreferrer');
+            closeArticle();
+          }
+        } catch {
+          // Cross-origin error means it might have loaded, but we can't tell
+          // Wait a bit longer and assume error if still no visual change
+          setTimeout(() => {
+            window.open(post.url, '_blank', 'noopener,noreferrer');
+            closeArticle();
+          }, 2000);
+        }
       }
-    } catch (err) {
-      console.error('Failed to summarize article:', err);
-      setSummary(null);
-    } finally {
-      setArticleLoading(false);
-    }
+    }, 3000);
   };
 
   const closeArticle = () => {
     setSelectedPost(null);
-    setSummary(null);
-    setArticleLoading(false);
-    setShowFullText(false);
+    setIframeError(false);
   };
 
   return (
@@ -112,6 +117,12 @@ function App() {
       </header>
 
       <main className="main">
+        {warning && (
+          <div className="warning-banner">
+            <span className="warning-icon">⚠️</span>
+            <span className="warning-text">{warning}</span>
+          </div>
+        )}
         {error && (
           <div className="error-banner">
             {error}
@@ -179,75 +190,22 @@ function App() {
                 <span>{selectedPost.domain}</span>
               </div>
             </div>
-            {selectedPost.thumbnail && (
-              <div className="article-preview-image">
-                <img 
-                  src={fixImageUrl(selectedPost.thumbnail) || ''} 
-                  alt="Article preview"
+            <div className="article-embed-container">
+              {!iframeError ? (
+                <iframe
+                  ref={iframeRef}
+                  src={selectedPost.url}
+                  className="article-iframe"
+                  title={selectedPost.title}
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
                 />
+              ) : null}
+              <div className={`iframe-fallback ${iframeError ? 'visible' : ''}`}>
+                <p>Opening article in new tab...</p>
+                <p className="fallback-hint">
+                  {selectedPost.domain} doesn't allow embedding. Redirecting you to the original article.
+                </p>
               </div>
-            )}
-            <div className="article-body">
-              {articleLoading ? (
-                <div className="article-loading">
-                  <div className="spinner"></div>
-                  <p>🤖 AI is reading and summarizing...</p>
-                </div>
-              ) : summary ? (
-                <div className="article-summary">
-                  {/* TL;DR Section */}
-                  <div className="summary-section tldr">
-                    <h3>⚡ TL;DR</h3>
-                    <p className="tldr-text">{summary.tldr}</p>
-                  </div>
-                  
-                  {/* Key Points */}
-                  {summary.keyPoints && summary.keyPoints.length > 0 && (
-                    <div className="summary-section">
-                      <h3>🏷️ Key Topics</h3>
-                      <div className="key-points">
-                        {summary.keyPoints.map((point: string, i: number) => (
-                          <span key={i} className="key-point-tag">{point}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Bullet Points */}
-                  {summary.bullets && summary.bullets.length > 0 && (
-                    <div className="summary-section">
-                      <h3>📝 Key Takeaways</h3>
-                      <ul className="bullet-list">
-                        {summary.bullets.map((bullet: string, i: number) => (
-                          <li key={i}>{bullet}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  
-                  {/* Full Text Toggle */}
-                  {summary.fullText && (
-                    <div className="summary-section">
-                      <button 
-                        className="toggle-full-text"
-                        onClick={() => setShowFullText(!showFullText)}
-                      >
-                        {showFullText ? 'Hide Full Text ↑' : 'Read Full Article ↓'}
-                      </button>
-                      {showFullText && (
-                        <div className="full-text">
-                          {summary.fullText}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="article-embed-placeholder">
-                  <p>Unable to generate summary.</p>
-                  <p>Click below to read the full article on {selectedPost.domain}</p>
-                </div>
-              )}
             </div>
             <div className="article-actions">
               <a 
