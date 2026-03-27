@@ -28,12 +28,10 @@ function App() {
 
   const API_URL = ''; // Use relative URLs - works both locally and deployed
 
-  // Fix protocol-relative URLs and ensure https
+  // Proxy images through backend to avoid hotlink blocking
   const fixImageUrl = (url: string | null): string | null => {
     if (!url) return null;
-    if (url.startsWith('//')) return 'https:' + url;
-    if (url.startsWith('http:')) return url.replace('http:', 'https:');
-    return url;
+    return `/api/proxy-image?url=${encodeURIComponent(url)}`;
   };
 
   useEffect(() => {

@@ -156,6 +156,42 @@ app.get('/api/news/:subreddit', async (req, res) => {
   }
 });
 
+//added by DK from Alfred on 3/27/26
+// Add this after your API routes but before the catch-all route
+
+// Image proxy to bypass Reddit's hotlink protection
+app.get('/api/proxy-image', async (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'URL required' });
+  }
+  
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0'
+      }
+    });
+    
+    if (!response.ok) {
+      return res.status(404).send('Image not found');
+    }
+    
+    const contentType = response.headers.get('content-type');
+    if (contentType) {
+      res.set('Content-Type', contentType);
+    }
+    
+    const buffer = await response.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error('Image proxy error:', error);
+    res.status(500).json({ error: 'Failed to fetch image' });
+  }
+});
+
+
 // Extract and summarize article
 app.get('/api/summarize', async (req, res) => {
   const { url } = req.query;
@@ -254,5 +290,8 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Newsplus API running on port ${PORT}`);
 });
+
+
+
 
 export default app;
