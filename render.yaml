@@ -3,10 +3,8 @@ services:
     name: newsplus
     runtime: node
     plan: free
-    buildCommand: |
-      cd backend && npm install
-      cd ../frontend && npm install && npm run build
-    startCommand: NODE_PATH=backend/node_modules node backend/server.js
+    buildCommand: npm install
+    startCommand: cd backend && npm start
     envVars:
       - key: NODE_ENV
         value: production
